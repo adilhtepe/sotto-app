@@ -14,6 +14,7 @@
  *   -f fmt         send: wire format s16 | s24 | f32 (s16)
  *   --ca f --cert f --key f      secure VBAN (vban_cert); play then accepts only authenticated senders
  *   --hub ip[:port]              play, secure: receive from a secure hub instead of listening
+ *   -x             play: exclusive device (ALSA hardware, no dmix): lower latency; use on a Raspberry Pi
  *   --label name   play: device name shown to VBAN discovery (default: the output device)
  *   --announce ip[:port]         play: while no audio arrives, announce this receiver (PING0) every 10 s
  *   --null         use a silent, real-time paced device (headless servers, tests)
@@ -200,6 +201,12 @@ static int cmd_play(int argc, char **argv)
     dc.sampleRate = 0;                         /* the device's own rate: the jitter buffer resamples */
     dc.periodSizeInFrames = 128;
     dc.performanceProfile = ma_performance_profile_low_latency;
+    if (arg_flag(argc, argv, "-x")) {
+        /* exclusive: open the hardware device directly (ALSA hw/plughw, no dmix; WASAPI exclusive).
+         * Lower latency, and needed on the Raspberry Pi's bcm2835, where dmix stalls. */
+        dc.playback.shareMode = ma_share_mode_exclusive;
+        dc.alsa.noMMap = MA_TRUE;
+    }
     dc.dataCallback = play_cb;
     if (ma_device_init(&ctx, &dc, &dev) != MA_SUCCESS) { fprintf(stderr, "cannot open the playback device\n"); return 1; }
 
@@ -444,7 +451,7 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "send")) return cmd_send(argc, argv);
     fprintf(stderr,
             "usage: sotto devices\n"
-            "       sotto play [-n name] [-p port] [-d device] [-c ch] [-l ms] [-s ip] [--null] [--label name] [--announce ip[:port]]\n"
+            "       sotto play [-n name] [-p port] [-d device] [-x] [-c ch] [-l ms] [-s ip] [--null] [--label name] [--announce ip[:port]]\n"
             "                  [--ca f --cert f --key f [--hub ip[:port]]]\n"
             "       sotto send -i ip [-n name] [-p port] [-d device] [-c ch] [-r hz] [-b frames] [-f s16|s24|f32] [--null] [--ca f --cert f --key f]\n");
     return 2;
