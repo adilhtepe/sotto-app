@@ -1,0 +1,21 @@
+cmake_minimum_required(VERSION 3.13)
+project(sotto_app C CXX)
+# The SDK (submodule): library and the vban_* example tools, no tests or benchmarks
+set(VBAN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(VBAN_BUILD_BENCH OFF CACHE BOOL "" FORCE)
+add_subdirectory(sdk)
+
+# sotto: VBAN to/from any sound device (miniaudio: WASAPI, CoreAudio, ALSA, PulseAudio, JACK...)
+add_executable(sotto sotto.c)
+target_include_directories(sotto PRIVATE third_party/miniaudio)
+target_link_libraries(sotto PRIVATE vban)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(sotto PRIVATE ${CMAKE_DL_LIBS})
+elseif(APPLE)
+    target_link_libraries(sotto PRIVATE "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")
+endif()
+if(NOT MSVC)
+    # miniaudio is vendored unmodified: no pedantic flags on its single-header implementation
+    target_compile_options(sotto PRIVATE -Wall -Wno-unused-function)
+endif()
+install(TARGETS sotto RUNTIME DESTINATION bin)
