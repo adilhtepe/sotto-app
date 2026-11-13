@@ -14,6 +14,8 @@
  *   -f fmt         send: wire format s16 | s24 | f32 (s16)
  *   --ca f --cert f --key f      secure VBAN (vban_cert); play then accepts only authenticated senders
  *   --hub ip[:port]              play, secure: receive from a secure hub instead of listening
+ *   --label name   play: device name shown to VBAN discovery (default: the output device)
+ *   --announce ip[:port]         play: while no audio arrives, announce this receiver (PING0) every 10 s
  *   --null         use a silent, real-time paced device (headless servers, tests)
  *   --seconds n    stop after n seconds and print a summary (scripts, CI)
  *
@@ -34,6 +36,11 @@
 
 #include "sdk/examples/common.h"
 #include "vban/vban_atomic.h"
+#if defined(_WIN32)
+#include <winsock2.h>                 /* gethostname */
+#else
+#include <unistd.h>                   /* gethostname */
+#endif
 
 static uint64_t now_ms(void) { return vban_time_ns() / 1000000u; }
 
@@ -148,13 +155,26 @@ static int cmd_play(int argc, char **argv)
     const char *want = arg_str(argc, argv, "-d", NULL), *srcip = arg_str(argc, argv, "-s", NULL);
     const char *hub = arg_str(argc, argv, "--hub", NULL);
     unsigned ch = (unsigned)arg_int(argc, argv, "-c", 2), i;
-    uint64_t next_stat;
+    uint64_t next_stat, next_announce = 0, last_audio_ns = 0;
+    static vban_ping0_t me;                     /* who we are, for PING0 replies and announcements */
+    vban_rx_config_t rc;
+    vban_addr_t announce_to = { 0, 0 };
+    const char *announce = arg_str(argc, argv, "--announce", NULL);
+    uint32_t announce_id = 1, last_packets = 0;
     int quiet = arg_flag(argc, argv, "-q");
 
     pn.secure = ex_load_identity(argc, argv, &pn.id);
     if (pn.secure < 0) return 2;
     if (ch < 1 || ch > 8) { fprintf(stderr, "1..8 channels\n"); return 2; }
     if (srcip && vban_addr_parse(srcip, 0, &src) != VBAN_OK) { fprintf(stderr, "bad source ip\n"); return 2; }
+    if (announce) {
+        char host[64];
+        const char *colon = strchr(announce, ':');
+        size_t hl = colon ? (size_t)(colon - announce) : strlen(announce);
+        if (hl >= sizeof host) { fprintf(stderr, "bad --announce address\n"); return 2; }
+        memcpy(host, announce, hl); host[hl] = 0;
+        if (vban_addr_parse(host, colon ? (uint16_t)atoi(colon + 1) : VBAN_DEFAULT_PORT, &announce_to) != VBAN_OK) { fprintf(stderr, "bad --announce address\n"); return 2; }
+    }
     if (hub) {
         char host[64];
         const char *colon = strchr(hub, ':');
@@ -191,7 +211,17 @@ static int cmd_play(int argc, char **argv)
     jc.target_frames = (uint32_t)(arg_int(argc, argv, "-l", 10) * 48);
     if (vban_jb_init(&g_jb, &jc, ring, (uint32_t)(sizeof ring / sizeof ring[0] / ch)) != VBAN_OK) { fprintf(stderr, "jitter buffer\n"); return 1; }
 
-    vban_rx_init(&rx, NULL);
+    /* answer PING0 (VBAN discovery: Voicemeeter, the Sotto hub) as a receiver */
+    me.bit_type = VBAN_PING_TYPE_RECEPTOR;
+    me.bit_feature = VBAN_PING_FEATURE_AUDIO;
+    me.prefered_rate = dev.sampleRate; me.min_rate = 6000; me.max_rate = 705600;
+    snprintf(me.device_name, sizeof me.device_name, "%s", arg_str(argc, argv, "--label", dname));
+    snprintf(me.manufacturer_name, sizeof me.manufacturer_name, "Sotto");
+    snprintf(me.application_name, sizeof me.application_name, "sotto play");
+    if (gethostname(me.host_name, sizeof me.host_name - 1) != 0) me.host_name[0] = 0;
+    memset(&rc, 0, sizeof rc);
+    rc.identity = &me; rc.send = vban_udp_sink; rc.send_ctx = &s;
+    vban_rx_init(&rx, &rc);
     vban_rx_subscribe_audio(&rx, arg_str(argc, argv, "-n", "Stream1"), src.ip, &g_jb, NULL, NULL);
     if (vban_udp_open(&s, NULL, hub ? 0 : (uint16_t)arg_int(argc, argv, "-p", VBAN_DEFAULT_PORT), VBAN_SOCK_REUSE) != VBAN_OK) {
         fprintf(stderr, "cannot bind the UDP port\n");
@@ -219,6 +249,22 @@ static int cmd_play(int argc, char **argv)
             up = vban_sec_link_up(&pn.link, ns / 1000000u);
             if (up && !pn.was_up) fprintf(stderr, "\nsecure session up with the hub\n");
             pn.was_up = up;
+        }
+        if (announce) {
+            /* while no audio arrives, tell the hub we exist every 10 s (a PING0 request carrying
+             * our identity), so it lists us and can route to us */
+            vban_jb_stats_t st;
+            vban_jb_get_stats(&g_jb, &st);
+            if (st.packets != last_packets) { last_packets = st.packets; last_audio_ns = ns; }
+            if (ns >= next_announce && ns - last_audio_ns > 3000000000ull) {
+                uint8_t pkt[VBAN_HEADER_SIZE + VBAN_PING0_SIZE];
+                vban_name_t label;
+                int k;
+                vban_name_set(&label, "VBAN PING");
+                k = vban_build_ping(pkt, sizeof pkt, announce_id++, 0, &label, &me);
+                if (k > 0) vban_udp_send(&s, pkt, (size_t)k, &announce_to);
+                next_announce = ns + 10000000000ull;
+            }
         }
         if (!quiet && ns >= next_stat) {
             vban_jb_stats_t st;
@@ -398,7 +444,8 @@ int main(int argc, char **argv)
     if (!strcmp(cmd, "send")) return cmd_send(argc, argv);
     fprintf(stderr,
             "usage: sotto devices\n"
-            "       sotto play [-n name] [-p port] [-d device] [-c ch] [-l ms] [-s ip] [--null] [--ca f --cert f --key f [--hub ip[:port]]]\n"
+            "       sotto play [-n name] [-p port] [-d device] [-c ch] [-l ms] [-s ip] [--null] [--label name] [--announce ip[:port]]\n"
+            "                  [--ca f --cert f --key f [--hub ip[:port]]]\n"
             "       sotto send -i ip [-n name] [-p port] [-d device] [-c ch] [-r hz] [-b frames] [-f s16|s24|f32] [--null] [--ca f --cert f --key f]\n");
     return 2;
 }

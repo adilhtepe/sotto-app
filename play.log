@@ -1,0 +1,3 @@
+playing 'Smoke' on default (Null, 48000 Hz, 2 ch)
+0 Hz  packets 0  lost 0  repaired 0  late 0  underruns 0  latency 0.0 ms   48000 Hz  packets 751  lost 0  repaired 0  late 0  underruns 1  latency 9.2 ms   48000 Hz  packets 1503  lost 0  repaired 0  late 0  underruns 1  latency 10.7 ms   48000 Hz  packets 2243  lost 0  repaired 0  late 0  underruns 2  latency 0.0 ms   48000 Hz  packets 2243  lost 0  repaired 0  late 0  underruns 2  latency 0.0 ms   
+summary: packets 2243 lost 0 underruns 2
