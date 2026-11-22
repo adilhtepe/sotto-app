@@ -33,13 +33,14 @@
 #define MA_NO_RESOURCE_MANAGER
 #define MA_NO_NODE_GRAPH
 #define MA_NO_ENGINE
+#if defined(_WIN32)
+#include <winsock2.h>                 /* before windows.h (miniaudio), or winsock.h clashes */
+#endif
 #include "miniaudio.h"
 
 #include "sdk/examples/common.h"
 #include "vban/vban_atomic.h"
-#if defined(_WIN32)
-#include <winsock2.h>                 /* gethostname */
-#else
+#if !defined(_WIN32)
 #include <unistd.h>                   /* gethostname */
 #endif
 
